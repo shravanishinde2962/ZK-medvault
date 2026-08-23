@@ -1,0 +1,1742 @@
+<doctype !html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ZK-MedVault | Zero-Knowledge Medical Data Vault</title>
+    <meta name="description" content="Decentralized medical data vault with Zero-Knowledge verification, on-device AI symptom triage, emergency ZK-pass, and research rewards." />
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
+              mono: ['"JetBrains Mono"', 'monospace'],
+            },
+            colors: {
+              slate: {
+                850: '#0f172a',
+                950: '#070b14'
+              }
+            }
+          }
+        }
+      }
+    </script>
+    
+    <!-- React 18 & ReactDOM -->
+    <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- QRCode Generator -->
+    <script src="...qrcode..."><</script>
+
+    <!-- Canvas Confetti -->
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>
+
+    <!-- Custom Design Tokens -->
+    <style>
+      body {
+        font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+        background-color: #070b14;
+        color: #f1f5f9;
+        min-height: 100vh;
+        background-image: 
+          radial-gradient(circle at 15% 15%, rgba(6, 182, 212, 0.05) 0%, transparent 40%),
+          radial-gradient(circle at 85% 85%, rgba(59, 130, 246, 0.05) 0%, transparent 40%),
+          radial-gradient(circle at 50% 50%, rgba(16, 185, 129, 0.02) 0%, transparent 60%);
+      }
+      .font-mono {
+        font-family: 'JetBrains Mono', monospace;
+      }
+      .glass-panel {
+        background: rgba(13, 22, 39, 0.75);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 16px;
+      }
+      .glass-panel-hover {
+        transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      .glass-panel-hover:hover {
+        background: rgba(18, 30, 54, 0.85);
+        border-color: rgba(56, 189, 248, 0.25);
+        transform: translateY(-2px);
+        box-shadow: 0 12px 30px -10px rgba(0, 0, 0, 0.5);
+      }
+      .scanner-beam {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 3px;
+        background: linear-gradient(90deg, transparent, #ef4444, transparent);
+        box-shadow: 0 0 12px #ef4444;
+        animation: scanline 2.5s linear infinite;
+      }
+      @keyframes scanline {
+        0% { transform: translateY(-100%); }
+        100% { transform: translateY(800%); }
+      }
+      @keyframes pulse-subtle {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.85; transform: scale(1.02); }
+      }
+      .animate-pulse-subtle {
+        animation: pulse-subtle 3s ease-in-out infinite;
+      }
+      ::-webkit-scrollbar { width: 6px; height: 6px; }
+      ::-webkit-scrollbar-track { background: #070b14; }
+      ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 4px; }
+      ::-webkit-scrollbar-thumb:hover { background: #334155; }
+    </style>
+  </head>
+  <body class="bg-slate-950 text-slate-100 antialiased selection:bg-cyan-500 selection:text-white">
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useState, useEffect, useContext, createContext } = React;
+
+      // ==========================================
+      // 1. CRYPTOGRAPHIC & ZK UTILITIES
+      // ==========================================
+      async function calculateSHA256(message) {
+        const msgBuffer = new TextEncoder().encode(message);
+        const hashBuffer = await window.crypto.subtle.digest('SHA-256', msgBuffer);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+      }
+
+      async function deriveKey(passphrase = 'zk-medvault-key-2026') {
+        const enc = new TextEncoder();
+        const keyMaterial = await window.crypto.subtle.importKey(
+          'raw', enc.encode(passphrase), { name: 'PBKDF2' }, false, ['deriveKey']
+        );
+        return window.crypto.subtle.deriveKey(
+          {
+            name: 'PBKDF2',
+            salt: enc.encode('zk-medvault-salt-9912'),
+            iterations: 100000,
+            hash: 'SHA-256'
+          },
+          keyMaterial,
+          { name: 'AES-GCM', length: 256 },
+          false,
+          ['encrypt', 'decrypt']
+        );
+      }
+
+      async function encryptData(data) {
+        const key = await deriveKey();
+        const iv = window.crypto.getRandomValues(new Uint8Array(12));
+        const enc = new TextEncoder();
+        const encoded = enc.encode(typeof data === 'string' ? data : JSON.stringify(data));
+        const ciphertextBuffer = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoded);
+        const ciphertextBase64 = btoa(String.fromCharCode(...new Uint8Array(ciphertextBuffer)));
+        const ivBase64 = btoa(String.fromCharCode(...Array.from(iv)));
+        const hash = await calculateSHA256(ciphertextBase64);
+        return {
+          ciphertext: ciphertextBase64,
+          iv: ivBase64,
+          ipfsCID: `bafybeih${hash.slice(0, 32).toLowerCase()}medvault77`,
+          integrityHash: `0x${hash}`,
+          timestamp: new Date().toISOString()
+        };
+      }
+
+      function generateCurvePoint(seed) {
+        const hash = Array.from(seed).reduce((acc, char) => (acc * 31 + char.charCodeAt(0)) % 1000000007, 7);
+        return [
+          `0x${(hash * 1337).toString(16).padStart(64, '0').slice(-64)}`,
+          `0x${(hash * 7331).toString(16).padStart(64, '0').slice(-64)}`
+        ];
+      }
+
+      async function generateZKProof(circuitType, privateInputs, publicInputs) {
+        const startTime = performance.now();
+        let isSatisfied = false;
+        let publicSignals = [];
+        let circuitName = '';
+
+        if (circuitType === 'VACCINE_STATUS') {
+          circuitName = 'VaccinationVerificationCircuit.circom';
+          const { vaccineCode, doses } = privateInputs;
+          const { requiredVaccineCode, minRequiredDoses } = publicInputs;
+          isSatisfied = (vaccineCode === requiredVaccineCode) && (Number(doses) >= Number(minRequiredDoses));
+          publicSignals = [`reqCode:${requiredVaccineCode}`, `minDoses:${minRequiredDoses}`, `isVerified:${isSatisfied ? '1' : '0'}`];
+        } else if (circuitType === 'METRIC_RANGE_CHECK') {
+          circuitName = 'BiomarkerRangeProof.circom';
+          const { metricValue } = privateInputs;
+          const { minThreshold, maxThreshold, metricName } = publicInputs;
+          const num = parseFloat(metricValue);
+          isSatisfied = num >= parseFloat(minThreshold) && num <= parseFloat(maxThreshold);
+          publicSignals = [`metric:${metricName}`, `min:${minThreshold}`, `max:${maxThreshold}`, `inRange:${isSatisfied ? '1' : '0'}`];
+        } else if (circuitType === 'AGE_ELIGIBILITY') {
+          circuitName = 'AgeBracketMembership.circom';
+          const { birthYear } = privateInputs;
+          const { minAge, maxAge, currentYear = 2026 } = publicInputs;
+          const calculatedAge = currentYear - parseInt(birthYear);
+          isSatisfied = calculatedAge >= parseInt(minAge) && calculatedAge <= parseInt(maxAge);
+          publicSignals = [`studyWindow:[${minAge}-${maxAge}]`, `validAge:${isSatisfied ? '1' : '0'}`];
+        } else if (circuitType === 'CLINICAL_TRIAL_CRITERIA') {
+          circuitName = 'PharmaTrialEligibility.circom';
+          const { hasCondition, isNonSmoker, biomarkerValue } = privateInputs;
+          const { targetCondition, reqNonSmoker, maxBiomarker } = publicInputs;
+          const conditionMatch = hasCondition === targetCondition;
+          const smokeMatch = !reqNonSmoker || isNonSmoker === true;
+          const bioMatch = !maxBiomarker || parseFloat(biomarkerValue) <= parseFloat(maxBiomarker);
+          isSatisfied = conditionMatch && smokeMatch && bioMatch;
+          publicSignals = [`trialCondition:${targetCondition}`, `reqNonSmoker:${reqNonSmoker ? '1' : '0'}`, `isEligible:${isSatisfied ? '1' : '0'}`];
+        }
+
+        await new Promise(r => setTimeout(r, 380));
+        const provingTimeMs = Math.round(performance.now() - startTime);
+        const rawSeed = `${circuitType}_${JSON.stringify(publicInputs)}_${isSatisfied}_${Date.now()}`;
+        const proofHash = await calculateSHA256(rawSeed);
+
+        return {
+          pi_a: [generateCurvePoint(proofHash + '_a0')[0], generateCurvePoint(proofHash + '_a1')[1], '0x1'],
+          pi_b: [
+            [generateCurvePoint(proofHash + '_b00')[0], generateCurvePoint(proofHash + '_b01')[1]],
+            [generateCurvePoint(proofHash + '_b10')[0], generateCurvePoint(proofHash + '_b11')[1]],
+            ['0x1', '0x0']
+          ],
+          pi_c: [generateCurvePoint(proofHash + '_c0')[0], generateCurvePoint(proofHash + '_c1')[1], '0x1'],
+          protocol: 'groth16',
+          curve: 'bn254',
+          circuit: circuitName,
+          provingTimeMs,
+          proofHash: `0x${proofHash.slice(0, 40)}`,
+          publicSignals,
+          isValid: isSatisfied
+        };
+      }
+
+      async function verifyZKProof(proof) {
+        const startTime = performance.now();
+        await new Promise(r => setTimeout(r, 150));
+        const passed = proof.pi_a && proof.pi_b && proof.pi_c && proof.isValid === true;
+        return {
+          verified: passed,
+          circuit: proof.circuit,
+          verificationTimeMs: Math.round(performance.now() - startTime),
+          publicSignals: proof.publicSignals,
+          verifiedAt: new Date().toISOString()
+        };
+      }
+
+      // ==========================================
+      // 2. ON-DEVICE AI ENGINE
+      // ==========================================
+      async function analyzeSymptomsLocally({ primarySymptoms = [], durationDays = 1, painScale = 1, hasFever = false, feverTemp = 98.6, chestPain = false, difficultyBreathing = false, customNotes = '' }) {
+        const startTime = performance.now();
+        let riskScore = 0;
+        let redFlags = [];
+        let department = 'General Practice / Outpatient';
+        let urgency = 'Low (Routine Care)';
+        let potentialConditions = [];
+        let actionPlan = [];
+
+        if (chestPain) {
+          riskScore += 45;
+          redFlags.push('Acute Chest Discomfort (Cardiovascular Risk)');
+          department = 'Emergency Medicine / Cardiology';
+          urgency = 'CRITICAL (Immediate ER Consultation)';
+        }
+        if (difficultyBreathing) {
+          riskScore += 40;
+          redFlags.push('Respiratory Compromise / Dyspnea');
+          department = 'Pulmonology / Emergency Care';
+          urgency = 'CRITICAL (Immediate ER Consultation)';
+        }
+        if (hasFever && feverTemp >= 103) {
+          riskScore += 25;
+          redFlags.push(`High Grade Hyperthermia (${feverTemp}°F)`);
+        } else if (hasFever && feverTemp >= 100.4) {
+          riskScore += 15;
+        }
+        if (painScale >= 8) {
+          riskScore += 25;
+          redFlags.push(`Severe Pain Level (${painScale}/10)`);
+        } else if (painScale >= 5) {
+          riskScore += 12;
+        }
+
+        const symLower = primarySymptoms.map(s => s.toLowerCase());
+        const match = t => symLower.some(s => s.includes(t)) || customNotes.toLowerCase().includes(t);
+
+        if (match('cough') || match('wheezing')) {
+          if (match('wheezing') || match('asthma')) {
+            potentialConditions.push({ name: 'Acute Bronchospasm / Asthma Exacerbation', probability: '82%', specialist: 'Pulmonologist' });
+            department = 'Pulmonology';
+          } else {
+            potentialConditions.push({ name: 'Viral Upper Respiratory Infection', probability: '74%', specialist: 'Primary Care' });
+          }
+        }
+        if (match('headache') || match('migraine') || match('dizziness')) {
+          potentialConditions.push({ name: 'Tension / Stress Cephalea', probability: '85%', specialist: 'General Physician' });
+        }
+        if (match('stomach') || match('nausea')) {
+          potentialConditions.push({ name: 'Gastroenteritis / Acid Dyspepsia', probability: '70%', specialist: 'Gastroenterology' });
+        }
+        if (match('rash') || match('itch')) {
+          potentialConditions.push({ name: 'Allergic Contact Dermatitis', probability: '78%', specialist: 'Dermatologist' });
+        }
+        if (potentialConditions.length === 0) {
+          potentialConditions.push({ name: 'Nonspecific Symptom Cluster', probability: '60%', specialist: 'General Practitioner' });
+        }
+
+        let level = 'LOW';
+        if (riskScore >= 70 || chestPain || difficultyBreathing) {
+          level = 'CRITICAL';
+          urgency = 'CRITICAL (Immediate ER Consultation)';
+          actionPlan = ['Call emergency services (911/112) or proceed to the nearest emergency department immediately.', 'Keep your Emergency ZK-Pass QR code ready for EMT paramedics.'];
+        } else if (riskScore >= 40) {
+          level = 'MODERATE';
+          urgency = 'Moderate (Schedule Clinic Visit within 24-48h)';
+          actionPlan = [`Consult a specialist in ${department}.`, 'Hydrate, rest, and monitor body temperature twice daily.'];
+        } else {
+          level = 'MILD';
+          urgency = 'Low (Supportive Self-Care)';
+          actionPlan = ['Practice supportive home care: adequate hydration and rest.', 'Monitor symptoms over next 48 hours.'];
+        }
+
+        await new Promise(r => setTimeout(r, 450));
+        const inferenceTimeMs = Math.round(performance.now() - startTime);
+        const receiptHash = await calculateSHA256(`${JSON.stringify(symLower)}_${riskScore}_${level}_${Date.now()}`);
+
+        return {
+          riskScore: Math.min(100, Math.max(5, riskScore)),
+          riskLevel: level,
+          urgency,
+          department,
+          potentialConditions,
+          redFlags,
+          actionPlan,
+          inferenceTimeMs,
+          zkTriageReceipt: {
+            receiptHash: `0x${receiptHash}`,
+            timestamp: new Date().toISOString(),
+            signature: `SIG_ZKML_${receiptHash.slice(0, 20)}...`
+          }
+        };
+      }
+
+      // ==========================================
+      // 3. GLOBAL CONTEXT & MOCK STATE
+      // ==========================================
+      const VaultContext = createContext();
+
+      const INITIAL_RECORDS = [
+        {
+          id: 'REC-01',
+          title: 'COVID-19 mRNA Booster Certificate',
+          category: 'Immunization',
+          issuer: 'Apex City Health Department',
+          date: '2024-11-15',
+          doctor: 'Dr. Sarah Jenkins, MD',
+          isEncrypted: true,
+          ipfsCID: 'bafybeih4x79kzm98234jdf012938491k3491823medvault77',
+          integrityHash: '0x9d4e21a8f6c310294819238471bcca9812903823485718293481928374910293',
+          structuredData: {
+            vaccineName: 'Spikevax mRNA-1273.815',
+            vaccineCode: 'VAX-COV-2024',
+            dosesReceived: 3,
+            batchNumber: 'BT-99482-US',
+            status: 'VERIFIED_ACTIVE'
+          },
+          confidentialNotes: 'No adverse reactions noted. Booster completed.'
+        },
+        {
+          id: 'REC-02',
+          title: 'Comprehensive Metabolic Panel & HbA1c',
+          category: 'Laboratory Diagnostics',
+          issuer: 'Quest Diagnostic Labs',
+          date: '2025-01-20',
+          doctor: 'Dr. Robert Miller, Pathologist',
+          isEncrypted: true,
+          ipfsCID: 'bafybeih5a98234819238471bcca981290382348571829348192837491medvault77',
+          integrityHash: '0x3c8192a091823948123984128934819234871928374918239481928374918239',
+          structuredData: {
+            hba1c: 5.3,
+            fastingGlucose: 92,
+            cholesterolTotal: 178,
+            ldl: 98,
+            hdl: 58,
+            triglycerides: 110,
+            kidneyEGFR: '> 90'
+          },
+          confidentialNotes: 'All biomarker indices are within optimal non-diabetic range.'
+        },
+        {
+          id: 'REC-03',
+          title: 'Pulmonary Function & Spirometry Test',
+          category: 'Pulmonology',
+          issuer: 'Metro Pulmonary Institute',
+          date: '2025-04-10',
+          doctor: 'Dr. Angela Thorne, MD',
+          isEncrypted: true,
+          ipfsCID: 'bafybeih6c3819283749182394819283749182394819238471bcca98129medvault77',
+          integrityHash: '0x7f4819283749182394819283749182394819238471bcca981290382348571829',
+          structuredData: {
+            condition: 'Mild Intermittent Asthma',
+            icd10: 'J45.909',
+            fev1Percent: 88,
+            bronchodilatorResponse: 'Positive (14% reversibility)',
+            smokerStatus: 'Non-Smoker'
+          },
+          confidentialNotes: 'Prescribed Albuterol HFA as-needed. Well controlled.'
+        },
+        {
+          id: 'REC-04',
+          title: 'Psychotherapy & Mental Health Consultation',
+          category: 'Psychiatry & Behavioral',
+          issuer: 'Beacon Mind Wellness Clinic',
+          date: '2025-06-18',
+          doctor: 'Dr. Jonathan Blake, PsyD',
+          isEncrypted: true,
+          ipfsCID: 'bafybeih7d9182934819283749102934819238471bcca9812903823485medvault77',
+          integrityHash: '0x1a82934819283749102934819238471bcca98129038234857182934819283749',
+          structuredData: {
+            diagnosis: 'Situational Work-Related Stress',
+            dsm5Code: 'F43.20',
+            medicationPrescribed: 'None',
+            therapyProtocol: 'Cognitive Behavioral Therapy (CBT)'
+          },
+          confidentialNotes: 'Strictly confidential therapist psychotherapy notes. Not visible to routine doctors or emergency scans.'
+        }
+      ];
+
+      const INITIAL_STUDIES = [
+        {
+          id: 'STUDY-101',
+          title: 'Phase 3 Asthma Inhaled Therapy Clinical Trial',
+          sponsor: 'Novartis BioPharma Reseach',
+          category: 'Respiratory',
+          rewardTokens: 150,
+          targetParticipants: 500,
+          enrolledCount: 382,
+          criteriaDescription: 'Must have verified Asthma diagnosis (ICD-10 J45.x), age 20-35, verified non-smoker.',
+          claimed: false,
+          escrowAddress: '0x8892A...EscrowPool1'
+        },
+        {
+          id: 'STUDY-102',
+          title: 'Metabolic Longevity & Pre-Diabetes Prevention Study',
+          sponsor: 'Stanford Longevity Institute',
+          category: 'Metabolic & Endocrinology',
+          rewardTokens: 100,
+          targetParticipants: 1000,
+          enrolledCount: 840,
+          criteriaDescription: 'Must prove HbA1c < 5.7% (optimal non-diabetic range) and age 18-50 without revealing exact lab scores.',
+          claimed: false,
+          escrowAddress: '0x3341C...EscrowPool2'
+        },
+        {
+          id: 'STUDY-103',
+          title: 'Multi-Variant mRNA Booster Efficacy Registry',
+          sponsor: 'Global Vaccine Safety Consortium',
+          category: 'Immunology',
+          rewardTokens: 60,
+          targetParticipants: 2500,
+          enrolledCount: 2190,
+          criteriaDescription: 'Must cryptographically prove at least 3 mRNA booster doses administered without disclosing location or clinic.',
+          claimed: false,
+          escrowAddress: '0x7120F...EscrowPool3'
+        }
+      ];
+
+      const INITIAL_TIMED_GRANTS = [
+        {
+          id: 'GRANT-01',
+          doctorName: 'Dr. Elena Rostova',
+          hospital: 'St. Jude Cardiology Center',
+          walletAddress: '0x3A9F...84E2',
+          grantedAt: new Date(Date.now() - 35 * 60 * 1000).toISOString(),
+          expiresAt: new Date(Date.now() + 85 * 60 * 1000).toISOString(),
+          status: 'ACTIVE',
+          permittedCategories: ['Immunization', 'Laboratory Diagnostics', 'Pulmonology']
+        },
+        {
+          id: 'GRANT-02',
+          doctorName: 'Dr. Marcus Vance',
+          hospital: 'Metro Urgent Care',
+          walletAddress: '0x9B11...72A0',
+          grantedAt: new Date(Date.now() - 180 * 60 * 1000).toISOString(),
+          expiresAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+          status: 'EXPIRED',
+          permittedCategories: ['Immunization']
+        }
+      ];
+
+      function VaultProvider({ children }) {
+        const [currentRole, setCurrentRole] = useState('patient');
+        const [patientProfile, setPatientProfile] = useState({
+          name: 'Alex Chen',
+          walletAddress: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e',
+          birthYear: 1998,
+          bloodGroup: 'O-Positive (O+)',
+          allergies: ['Penicillin (Severe Anaphylaxis)', 'Latex'],
+          chronicConditions: ['Mild Intermittent Asthma (J45.909)'],
+          emergencyContact: 'Sarah Chen (Spouse) • +1 (555) 234-5678',
+          organDonor: true,
+          dnrStatus: 'Full Resuscitation Code (CPR OK)',
+          medTokens: 250.00
+        });
+
+        const [records, setRecords] = useState(INITIAL_RECORDS);
+        const [timedGrants, setTimedGrants] = useState(INITIAL_TIMED_GRANTS);
+        const [studies, setStudies] = useState(INITIAL_STUDIES);
+        const [emergencyPrefs, setEmergencyPrefs] = useState({
+          includeBloodGroup: true,
+          includeAllergies: true,
+          includeEmergencyContact: true,
+          includeDNR: true,
+          includeChronicConditions: true,
+          includePsychiatric: false
+        });
+
+        const [auditLogs, setAuditLogs] = useState([
+          {
+            id: 'LOG-01',
+            type: 'ZK_VERIFY',
+            title: 'Doctor ZK-Proof Verification',
+            actor: 'Dr. Elena Rostova (0x3A9F...84E2)',
+            detail: 'Verified: COVID-19 mRNA 3-Dose Booster (VAX-COV-2024)',
+            txHash: '0x49f823...a9b2',
+            timestamp: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+            status: 'VERIFIED_ON_CHAIN'
+          },
+          {
+            id: 'LOG-02',
+            type: 'TIMED_ACCESS_GRANTED',
+            title: '2-Hour Timed Session Authorized',
+            actor: 'Patient Wallet (0x742d...f44e)',
+            detail: 'Granted time-locked read credentials to St. Jude Cardiology Center',
+            txHash: '0x77c102...38ff',
+            timestamp: new Date(Date.now() - 35 * 60 * 1000).toISOString(),
+            status: 'ACTIVE_LOCK'
+          }
+        ]);
+
+        const [notifications, setNotifications] = useState([]);
+
+        const addNotification = (title, message, type = 'info') => {
+          const newNotif = {
+            id: `NOTIF-${Date.now()}`,
+            title,
+            message,
+            type,
+            timestamp: new Date().toLocaleTimeString()
+          };
+          setNotifications(prev => [newNotif, ...prev]);
+        };
+
+        const addRecord = async (recordData) => {
+          const encResult = await encryptData(recordData.structuredData);
+          const newRecord = {
+            id: `REC-0${records.length + 1}`,
+            title: recordData.title,
+            category: recordData.category,
+            issuer: recordData.issuer || 'Personal Health Upload',
+            date: new Date().toISOString().split('T')[0],
+            doctor: recordData.doctor || 'Self-Uploaded',
+            isEncrypted: true,
+            ipfsCID: encResult.ipfsCID,
+            integrityHash: encResult.integrityHash,
+            structuredData: recordData.structuredData,
+            confidentialNotes: recordData.confidentialNotes || 'Client-side encrypted entry.'
+          };
+          setRecords(prev => [newRecord, ...prev]);
+          setAuditLogs(prev => [
+            {
+              id: `LOG-${Date.now()}`,
+              type: 'RECORD_ENCRYPTED_UPLOAD',
+              title: 'New Encrypted Record Anchored to IPFS',
+              actor: `Patient (${patientProfile.walletAddress.slice(0, 8)}...)`,
+              detail: `${recordData.title} encrypted via AES-GCM-256 and pinned to IPFS CID: ${newRecord.ipfsCID.slice(0, 18)}...`,
+              txHash: `0x${Math.random().toString(16).slice(2, 10)}...${Math.random().toString(16).slice(2, 6)}`,
+              timestamp: new Date().toISOString(),
+              status: 'IMMUTABLE_LOG'
+            },
+            ...prev
+          ]);
+          addNotification('Record Encrypted & Uploaded', `${recordData.title} was safely encrypted with your private key and stored on IPFS.`, 'success');
+        };
+
+        const revokeDoctorAccess = (grantId) => {
+          setTimedGrants(prev => prev.map(g => g.id === grantId ? { ...g, status: 'REVOKED' } : g));
+          addNotification('Access Revoked', 'Doctor session was terminated immediately.', 'warning');
+        };
+
+        const triggerBreakGlass = (doctorName, hospital, reason) => {
+          const newLog = {
+            id: `LOG-${Date.now()}`,
+            type: 'EMERGENCY_BREAK_GLASS',
+            title: '🚨 EMERGENCY BREAK-GLASS TRIGGERED',
+            actor: `${doctorName} (${hospital})`,
+            detail: `EMERGENCY ICU OVERRIDE: "${reason}". Full audit event recorded on blockchain ledger. Emergency contacts alerted via SMS/Email.`,
+            txHash: `0x${Math.random().toString(16).slice(2, 14)}...${Math.random().toString(16).slice(2, 8)}`,
+            timestamp: new Date().toISOString(),
+            status: 'CRITICAL_AUDIT_LOG'
+          };
+          setAuditLogs(prev => [newLog, ...prev]);
+          addNotification('🚨 BREAK-GLASS PROTOCOL ACTIVATED', `${doctorName} triggered emergency access for trauma care.`, 'emergency');
+        };
+
+        const claimResearchBounty = (studyId) => {
+          const study = studies.find(s => s.id === studyId);
+          if (!study || study.claimed) return;
+          setStudies(prev => prev.map(s => s.id === studyId ? { ...s, claimed: true, enrolledCount: s.enrolledCount + 1 } : s));
+          setPatientProfile(prev => ({ ...prev, medTokens: prev.medTokens + study.rewardTokens }));
+          setAuditLogs(prev => [
+            {
+              id: `LOG-${Date.now()}`,
+              type: 'RESEARCH_BOUNTY_CLAIMED',
+              title: 'Pharma ZK-Eligibility Proof Verified & Bounty Paid',
+              actor: `Smart Contract Escrow (${study.escrowAddress})`,
+              detail: `ZK-Proof successfully verified on-chain. Released +${study.rewardTokens} $MED reward to patient wallet.`,
+              txHash: `0x${Math.random().toString(16).slice(2, 12)}...${Math.random().toString(16).slice(2, 6)}`,
+              timestamp: new Date().toISOString(),
+              status: 'TOKENS_TRANSFERRED'
+            },
+            ...prev
+          ]);
+          addNotification(`🎉 +${study.rewardTokens} $MED Tokens Earned!`, `Your ZK proof for "${study.title}" was verified without revealing private health files.`, 'success');
+        };
+
+        const createStudy = (newStudyData) => {
+          const studyObj = {
+            id: `STUDY-${Date.now().toString().slice(-3)}`,
+            title: newStudyData.title,
+            sponsor: newStudyData.sponsor || 'Astra BioLabs',
+            category: newStudyData.category || 'Clinical Research',
+            rewardTokens: Number(newStudyData.rewardTokens) || 120,
+            targetParticipants: Number(newStudyData.targetParticipants) || 300,
+            enrolledCount: 0,
+            criteriaDescription: newStudyData.criteriaDescription || 'ZK criteria validation required.',
+            claimed: false,
+            escrowAddress: `0x${Math.random().toString(16).slice(2, 6)}...EscrowPool`
+          };
+          setStudies(prev => [studyObj, ...prev]);
+          addNotification('Study Created & Escrow Funded', `Study "${studyObj.title}" is now accepting ZK proofs.`, 'success');
+        };
+
+        return (
+          <VaultContext.Provider value={{
+            currentRole, setCurrentRole,
+            patientProfile, setPatientProfile,
+            records, setRecords,
+            timedGrants, studies,
+            emergencyPrefs, setEmergencyPrefs,
+            auditLogs, notifications,
+            addNotification, addRecord,
+            revokeDoctorAccess, triggerBreakGlass,
+            claimResearchBounty, createStudy
+          }}>
+            {children}
+          </VaultContext.Provider>
+        );
+      }
+
+      function useVault() {
+        return useContext(VaultContext);
+      }
+
+      // ==========================================
+      // 4. UI VIEWS
+      // ==========================================
+
+      // PATIENT VAULT VIEW
+      function PatientVaultView() {
+        const { patientProfile, records, addRecord, timedGrants, revokeDoctorAccess } = useVault();
+        const [decryptedState, setDecryptedState] = useState({});
+        const [showUploadModal, setShowUploadModal] = useState(false);
+        const [newTitle, setNewTitle] = useState('');
+        const [newCategory, setNewCategory] = useState('Laboratory Diagnostics');
+        const [newNotes, setNewNotes] = useState('');
+        const [newBiomarkerValue, setNewBiomarkerValue] = useState('95');
+        const [isUploading, setIsUploading] = useState(false);
+
+        const [selectedProofType, setSelectedProofType] = useState('VACCINE_STATUS');
+        const [isProving, setIsProving] = useState(false);
+        const [generatedProof, setGeneratedProof] = useState(null);
+        const [verificationResult, setVerificationResult] = useState(null);
+
+        const toggleDecrypt = (id) => {
+          setDecryptedState(prev => ({ ...prev, [id]: !prev[id] }));
+        };
+
+        const handleUploadSubmit = async (e) => {
+          e.preventDefault();
+          if (!newTitle.trim()) return;
+          setIsUploading(true);
+          await addRecord({
+            title: newTitle,
+            category: newCategory,
+            issuer: 'Apex Medical Lab',
+            doctor: 'Dr. Katherine Wood',
+            structuredData: {
+              metricValue: newBiomarkerValue,
+              recordedAt: new Date().toISOString(),
+              verifiedDoctorSignature: '0x8f9c2...valid'
+            },
+            confidentialNotes: newNotes || 'Encrypted client record.'
+          });
+          setIsUploading(false);
+          setShowUploadModal(false);
+          setNewTitle('');
+          setNewNotes('');
+        };
+
+        const handleRunZKProof = async () => {
+          setIsProving(true);
+          setGeneratedProof(null);
+          setVerificationResult(null);
+
+          let priv = {};
+          let pub = {};
+          if (selectedProofType === 'VACCINE_STATUS') {
+            priv = { vaccineCode: 'VAX-COV-2024', doses: 3 };
+            pub = { requiredVaccineCode: 'VAX-COV-2024', minRequiredDoses: 2 };
+          } else if (selectedProofType === 'METRIC_RANGE_CHECK') {
+            priv = { metricValue: 5.3 };
+            pub = { minThreshold: 4.0, maxThreshold: 5.7, metricName: 'HbA1c Glycated Hemoglobin' };
+          } else if (selectedProofType === 'AGE_ELIGIBILITY') {
+            priv = { birthYear: 1998 };
+            pub = { minAge: 20, maxAge: 35, currentYear: 2026 };
+          }
+
+          const proof = await generateZKProof(selectedProofType, priv, pub);
+          const verif = await verifyZKProof(proof);
+          setGeneratedProof(proof);
+          setVerificationResult(verif);
+          setIsProving(false);
+        };
+
+        return (
+          <div className="space-y-8 animate-in fade-in duration-300">
+            {/* Header Banner */}
+            <div className="p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900 to-cyan-950/40 border border-slate-800 shadow-xl relative overflow-hidden">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                <div>
+                  <div className="flex items-center gap-3 mb-2">
+                    <h1 className="text-2xl font-extrabold text-white tracking-tight">Encrypted Medical Vault</h1>
+                    <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                      ✓ Client AES-GCM Locked
+                    </span>
+                  </div>
+                  <p className="text-sm text-slate-300 max-w-2xl leading-relaxed">
+                    Records are encrypted on your device with your private key and stored across IPFS. Third parties never see raw files—they only verify zero-knowledge mathematical proofs.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowUploadModal(true)}
+                  className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white text-xs font-semibold shadow-lg shadow-cyan-500/20 cursor-pointer"
+                >
+                  + Upload & Encrypt Record
+                </button>
+              </div>
+
+              <div className="mt-6 pt-4 border-t border-slate-800/80 grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
+                <div><span className="text-slate-500 block text-[11px]">Vault Owner</span><span className="font-semibold text-slate-200">{patientProfile.name}</span></div>
+                <div><span className="text-slate-500 block text-[11px]">Wallet</span><span className="font-mono text-cyan-400 font-semibold">{patientProfile.walletAddress.slice(0, 6)}...{patientProfile.walletAddress.slice(-4)}</span></div>
+                <div><span className="text-slate-500 block text-[11px]">Emergency Blood Group</span><span className="font-semibold text-rose-400">{patientProfile.bloodGroup}</span></div>
+                <div><span className="text-slate-500 block text-[11px]">Total Documents</span><span className="font-semibold text-slate-200">{records.length} Records</span></div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* Records List */}
+              <div className="lg:col-span-2 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-base font-bold text-slate-100">Decentralized Medical Documents ({records.length})</h2>
+                  <span className="text-xs text-slate-400">AES-256 Client Ciphertexts</span>
+                </div>
+
+                <div className="space-y-4">
+                  {records.map(rec => {
+                    const isDecrypted = decryptedState[rec.id];
+                    return (
+                      <div key={rec.id} className="glass-panel p-5 transition-all hover:border-slate-700/80">
+                        <div className="flex items-start justify-between gap-4 mb-3">
+                          <div>
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-800 text-cyan-300 border border-cyan-500/20 font-mono">
+                                {rec.category}
+                              </span>
+                              <span className="text-xs text-slate-400">{rec.date}</span>
+                            </div>
+                            <h3 className="text-base font-bold text-white">{rec.title}</h3>
+                            <p className="text-xs text-slate-400 mt-0.5">Issued by: {rec.issuer} • {rec.doctor}</p>
+                          </div>
+
+                          <button
+                            onClick={() => toggleDecrypt(rec.id)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                              isDecrypted ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/25'
+                            }`}
+                          >
+                            {isDecrypted ? '🔒 Re-Lock' : '🔓 Decrypt View'}
+                          </button>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 py-2 px-3 rounded-xl bg-slate-950/60 border border-slate-800/60 text-[11px] font-mono mb-3">
+                          <span className="text-slate-500">IPFS CID:</span>
+                          <span className="text-cyan-400 truncate max-w-[200px]">{rec.ipfsCID}</span>
+                          <span className="text-slate-600">|</span>
+                          <span className={isDecrypted ? 'text-amber-400 font-semibold' : 'text-emerald-400 font-semibold'}>
+                            {isDecrypted ? '🔓 Decrypted (Local RAM)' : '🔒 AES-GCM Encrypted'}
+                          </span>
+                        </div>
+
+                        {isDecrypted ? (
+                          <div className="p-3.5 rounded-xl bg-slate-900/90 border border-amber-500/30 text-xs space-y-2 animate-in fade-in">
+                            <div className="flex items-center justify-between pb-1.5 border-b border-slate-800">
+                              <span className="font-semibold text-amber-300">Structured Medical Payload</span>
+                              <span className="text-[10px] text-slate-400">Decrypted via WebCrypto API</span>
+                            </div>
+                            <pre className="p-2.5 rounded-lg bg-slate-950 text-emerald-300 font-mono text-[11px] overflow-x-auto">
+                              {JSON.stringify(rec.structuredData, null, 2)}
+                            </pre>
+                            <p className="text-[11px] text-slate-300 italic">Clinical Notes: {rec.confidentialNotes}</p>
+                          </div>
+                        ) : (
+                          <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 text-[11px] font-mono text-slate-400 flex items-center justify-between">
+                            <div className="truncate pr-2">CIPHERTEXT: {rec.integrityHash.slice(0, 32)}...8f3a9e22 (AES-256 Locked)</div>
+                            <span className="text-slate-500 text-[10px] whitespace-nowrap">ZK-Ready</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* ZK Prover Sandbox */}
+              <div className="space-y-6">
+                <div className="glass-panel p-5 border-cyan-500/20">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+                    <h2 className="text-sm font-bold text-white">⚙ ZK Prover Sandbox</h2>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-cyan-950 text-cyan-400 border border-cyan-500/30 font-mono">
+                      Groth16 / BN254
+                    </span>
+                  </div>
+
+                  <p className="text-xs text-slate-400 mb-4">
+                    Generate a cryptographic proof verifying your medical condition without disclosing underlying lab values.
+                  </p>
+
+                  <div className="space-y-3">
+                    <select
+                      value={selectedProofType}
+                      onChange={e => setSelectedProofType(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 font-mono"
+                    >
+                      <option value="VACCINE_STATUS">Proof of 3-Dose Booster (VAX-COV-2024)</option>
+                      <option value="METRIC_RANGE_CHECK">Proof of HbA1c Normal Range (4.0% - 5.7%)</option>
+                      <option value="AGE_ELIGIBILITY">Proof of Age Bracket (20 - 35 Years)</option>
+                    </select>
+
+                    <button
+                      onClick={handleRunZKProof}
+                      disabled={isProving}
+                      className="w-full py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white text-xs font-bold shadow-lg shadow-cyan-500/20 cursor-pointer disabled:opacity-50"
+                    >
+                      {isProving ? 'Computing Groth16 Curve Points...' : '⚡ Generate & Verify ZK Proof'}
+                    </button>
+                  </div>
+
+                  {generatedProof && (
+                    <div className="mt-4 p-3.5 rounded-xl bg-slate-950 border border-cyan-500/30 text-xs space-y-2.5 animate-in fade-in">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono text-[10px] text-cyan-400 font-bold uppercase">{generatedProof.circuit}</span>
+                        <span className="text-[10px] text-slate-400 font-mono">Proved in {generatedProof.provingTimeMs}ms</span>
+                      </div>
+
+                      {verificationResult && (
+                        <div className="p-2 rounded-lg bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 font-bold text-xs">
+                          ✓ Mathematical Proof VERIFIED (Condition Met)
+                        </div>
+                      )}
+
+                      <div className="space-y-1">
+                        <span className="text-[10px] text-slate-500 font-mono">Public Signals:</span>
+                        <div className="flex flex-wrap gap-1">
+                          {generatedProof.publicSignals.map((sig, idx) => (
+                            <span key={idx} className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-[10px] font-mono text-slate-300">{sig}</span>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="p-2 rounded bg-slate-900 font-mono text-[10px] text-slate-400">
+                        Proof Hash: <span className="text-cyan-300">{generatedProof.proofHash}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Timed Doctor Grants */}
+                <div className="glass-panel p-5 border-slate-800">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-3">
+                    <h2 className="text-sm font-bold text-white">⏱ Active Timed Doctor Grants</h2>
+                    <span className="text-[10px] text-slate-400">Smart Contract Locks</span>
+                  </div>
+
+                  <div className="space-y-3">
+                    {timedGrants.map(grant => (
+                      <div key={grant.id} className="p-3 rounded-xl border bg-slate-900/80 border-slate-800 text-xs">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-bold text-slate-200">{grant.doctorName}</span>
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                            {grant.status}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 mb-2">{grant.hospital}</p>
+                        <div className="flex items-center justify-between pt-2 border-t border-slate-800 text-[10px] font-mono">
+                          <span className="text-slate-400">{grant.status === 'ACTIVE' ? 'Auto-revokes in ~85 min' : 'Expired'}</span>
+                          {grant.status === 'ACTIVE' && (
+                            <button onClick={() => revokeDoctorAccess(grant.id)} className="text-rose-400 hover:text-rose-300 font-semibold cursor-pointer">
+                              Revoke Now
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Upload Modal */}
+            {showUploadModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
+                <div className="w-full max-w-lg rounded-2xl bg-slate-900 border border-slate-700 p-6 shadow-2xl">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+                    <h3 className="text-base font-bold text-white">Upload & Encrypt Medical File</h3>
+                    <button onClick={() => setShowUploadModal(false)} className="text-slate-400 hover:text-white cursor-pointer">✕</button>
+                  </div>
+                  <form onSubmit={handleUploadSubmit} className="space-y-4 text-xs">
+                    <div>
+                      <label className="block text-slate-300 font-semibold mb-1">Document Title</label>
+                      <input
+                        type="text"
+                        required
+                        value={newTitle}
+                        onChange={e => setNewTitle(e.target.value)}
+                        placeholder="e.g., Annual Echocardiogram & Lipid Panel"
+                        className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-200 focus:outline-none focus:border-cyan-500"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-slate-300 font-semibold mb-1">Category</label>
+                        <select
+                          value={newCategory}
+                          onChange={e => setNewCategory(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-200 focus:outline-none focus:border-cyan-500"
+                        >
+                          <option value="Laboratory Diagnostics">Laboratory Diagnostics</option>
+                          <option value="Immunization">Immunization</option>
+                          <option value="Cardiology">Cardiology</option>
+                          <option value="Pulmonology">Pulmonology</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-slate-300 font-semibold mb-1">Key Biomarker Value</label>
+                        <input
+                          type="text"
+                          value={newBiomarkerValue}
+                          onChange={e => setNewBiomarkerValue(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-200 focus:outline-none focus:border-cyan-500"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-slate-300 font-semibold mb-1">Clinical Notes</label>
+                      <textarea
+                        rows={3}
+                        value={newNotes}
+                        onChange={e => setNewNotes(e.target.value)}
+                        placeholder="Physician notes, observations..."
+                        className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-200 focus:outline-none focus:border-cyan-500"
+                      ></textarea>
+                    </div>
+                    <div className="flex justify-end gap-2 pt-2">
+                      <button type="button" onClick={() => setShowUploadModal(false)} className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 cursor-pointer">Cancel</button>
+                      <button type="submit" disabled={isUploading} className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold cursor-pointer">
+                        {isUploading ? 'Encrypting...' : 'Encrypt & Upload'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      // ON-DEVICE AI SYMPTOM CHECKER VIEW
+      function AISymptomCheckerView() {
+        const COMMON_SYMPTOMS = ['Dry Cough', 'Wheezing / Shortness of Breath', 'Fever & Chills', 'Chest Tightness', 'Severe Throbbing Headache', 'Fatigue & Body Aches', 'Skin Rash', 'Nausea / Cramps'];
+        const [selectedSymptoms, setSelectedSymptoms] = useState(['Dry Cough', 'Wheezing / Shortness of Breath']);
+        const [durationDays, setDurationDays] = useState(3);
+        const [painScale, setPainScale] = useState(4);
+        const [hasFever, setHasFever] = useState(true);
+        const [feverTemp, setFeverTemp] = useState(101.2);
+        const [chestPain, setChestPain] = useState(false);
+        const [difficultyBreathing, setDifficultyBreathing] = useState(true);
+        const [customNotes, setCustomNotes] = useState('History of mild asthma. Cough worse during night.');
+        const [isAnalyzing, setIsAnalyzing] = useState(false);
+        const [triageResult, setTriageResult] = useState(null);
+
+        const toggleSymptom = sym => {
+          setSelectedSymptoms(prev => prev.includes(sym) ? prev.filter(s => s !== sym) : [...prev, sym]);
+        };
+
+        const handleRunAnalysis = async () => {
+          setIsAnalyzing(true);
+          const res = await analyzeSymptomsLocally({
+            primarySymptoms: selectedSymptoms,
+            durationDays: Number(durationDays),
+            painScale: Number(painScale),
+            hasFever,
+            feverTemp: parseFloat(feverTemp),
+            chestPain,
+            difficultyBreathing,
+            customNotes
+          });
+          setTriageResult(res);
+          setIsAnalyzing(false);
+        };
+
+        return (
+          <div className="space-y-8 animate-in fade-in duration-300">
+            <div className="p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900 to-indigo-950/40 border border-slate-800 shadow-xl relative overflow-hidden">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                <div>
+                  <div className="flex items-center gap-3 mb-2">
+                    <h1 className="text-2xl font-extrabold text-white tracking-tight">🧠 On-Device AI Symptom Triage</h1>
+                    <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/30">
+                      100% Local Inference
+                    </span>
+                  </div>
+                  <p className="text-sm text-slate-300 max-w-2xl leading-relaxed">
+                    Medical symptoms are analyzed directly inside your browser’s isolated memory. Zero symptoms or prompts are sent to external cloud servers.
+                  </p>
+                </div>
+                <div className="p-3 rounded-xl bg-slate-950/80 border border-indigo-500/30 text-xs font-mono space-y-1">
+                  <div className="text-slate-400">Cloud Exfiltration: <span className="text-emerald-400 font-bold">0.00 Bytes</span></div>
+                  <div className="text-slate-400">Network Requests: <span className="text-emerald-400 font-bold">0 HTTP</span></div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+              <div className="lg:col-span-7 space-y-6">
+                <div className="glass-panel p-6 space-y-5">
+                  <h2 className="text-sm font-bold text-slate-100">1. Select Presenting Symptoms</h2>
+                  <div className="flex flex-wrap gap-2">
+                    {COMMON_SYMPTOMS.map(sym => {
+                      const isSel = selectedSymptoms.includes(sym);
+                      return (
+                        <button
+                          key={sym}
+                          type="button"
+                          onClick={() => toggleSymptom(sym)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all cursor-pointer ${
+                            isSel ? 'bg-gradient-to-r from-cyan-500 to-indigo-600 text-white font-semibold shadow-md' : 'bg-slate-900 text-slate-300 border border-slate-800 hover:bg-slate-800'
+                          }`}
+                        >
+                          {sym}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="pt-4 border-t border-slate-800 grid grid-cols-2 gap-4">
+                    <div>
+                      <div className="flex justify-between text-xs text-slate-300 mb-2">
+                        <span>Duration:</span><span className="font-mono text-cyan-400">{durationDays} Days</span>
+                      </div>
+                      <input type="range" min="1" max="14" value={durationDays} onChange={e => setDurationDays(e.target.value)} className="w-full accent-cyan-500" />
+                    </div>
+                    <div>
+                      <div className="flex justify-between text-xs text-slate-300 mb-2">
+                        <span>Pain Scale:</span><span className="font-mono text-amber-400">{painScale} / 10</span>
+                      </div>
+                      <input type="range" min="1" max="10" value={painScale} onChange={e => setPainScale(e.target.value)} className="w-full accent-amber-500" />
+                    </div>
+                  </div>
+
+                  <div className="pt-4 border-t border-slate-800 space-y-2">
+                    <span className="text-xs font-bold text-slate-200 block">Critical Indicator Flags:</span>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="flex items-center gap-2 p-2 rounded-xl bg-slate-900 text-xs text-slate-300 cursor-pointer">
+                        <input type="checkbox" checked={difficultyBreathing} onChange={e => setDifficultyBreathing(e.target.checked)} className="accent-cyan-500" />
+                        <span>Shortness of Breath</span>
+                      </label>
+                      <label className="flex items-center gap-2 p-2 rounded-xl bg-slate-900 text-xs text-slate-300 cursor-pointer">
+                        <input type="checkbox" checked={chestPain} onChange={e => setChestPain(e.target.checked)} className="accent-rose-500" />
+                        <span>Chest Pain</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={handleRunAnalysis}
+                    disabled={isAnalyzing}
+                    className="w-full py-3 rounded-xl bg-gradient-to-r from-indigo-500 via-cyan-500 to-blue-600 text-white text-xs font-bold shadow-lg cursor-pointer disabled:opacity-50"
+                  >
+                    {isAnalyzing ? 'Executing Local Neural Triage...' : '✨ Analyze Symptoms Privately (On-Device)'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="lg:col-span-5">
+                {triageResult ? (
+                  <div className="glass-panel p-6 space-y-4 border-indigo-500/30 animate-in fade-in">
+                    <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                      <span className="text-xs font-bold text-white">Local AI Assessment</span>
+                      <span className="text-[10px] text-slate-400 font-mono">{triageResult.inferenceTimeMs}ms</span>
+                    </div>
+
+                    <div className={`p-4 rounded-xl border text-xs ${
+                      triageResult.riskLevel === 'CRITICAL' ? 'bg-rose-950/50 border-rose-500/50 text-rose-200' : 'bg-amber-950/40 border-amber-500/40 text-amber-200'
+                    }`}>
+                      <div className="font-bold uppercase">Urgency: {triageResult.riskLevel}</div>
+                      <div className="mt-1">{triageResult.urgency}</div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-900 text-xs">
+                      <span className="text-slate-500 block text-[11px]">Recommended Specialty:</span>
+                      <span className="text-sm font-bold text-cyan-300">{triageResult.department}</span>
+                    </div>
+
+                    <div>
+                      <span className="text-xs font-semibold text-slate-300 block mb-2">Conditions:</span>
+                      {triageResult.potentialConditions.map((cond, idx) => (
+                        <div key={idx} className="p-2 rounded bg-slate-950 text-xs flex justify-between mb-1">
+                          <span className="text-slate-200">{cond.name}</span>
+                          <span className="text-cyan-400 font-mono">{cond.probability}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-950 border border-cyan-500/30 text-xs space-y-1">
+                      <span className="font-bold text-cyan-300 text-[11px] block">Verifiable ZK-Triage Receipt</span>
+                      <div className="font-mono text-[10px] text-slate-400 break-all">Hash: {triageResult.zkTriageReceipt.receiptHash.slice(0, 32)}...</div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="glass-panel p-8 text-center text-slate-500 text-xs flex items-center justify-center min-h-[300px]">
+                    Select symptoms and click Analyze to execute in-browser inference.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // EMERGENCY ZK-PASS VIEW
+      function EmergencyPassView({ setActiveTab }) {
+        const { patientProfile, emergencyPrefs, setEmergencyPrefs } = useVault();
+        const [qrDataUrl, setQrDataUrl] = useState('');
+
+        useEffect(() => {
+          const payload = {
+            type: 'ZK_EMERGENCY_PASS_V2',
+            patient: patientProfile.name,
+            bloodGroup: emergencyPrefs.includeBloodGroup ? patientProfile.bloodGroup : null,
+            allergies: emergencyPrefs.includeAllergies ? patientProfile.allergies : [],
+            emergencyContact: emergencyPrefs.includeEmergencyContact ? patientProfile.emergencyContact : null,
+            dnrStatus: emergencyPrefs.includeDNR ? patientProfile.dnrStatus : null,
+            sig: '0x99a8123471bcca98129038234857182934819283749102934819238471bcca98'
+          };
+          QRCode.toDataURL(JSON.stringify(payload), { width: 280, margin: 1.5 })
+            .then(url => setQrDataUrl(url))
+            .catch(console.error);
+        }, [emergencyPrefs, patientProfile]);
+
+        const togglePref = k => setEmergencyPrefs(prev => ({ ...prev, [k]: !prev[k] }));
+
+        return (
+          <div className="space-y-8 animate-in fade-in duration-300">
+            <div className="p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900 to-rose-950/40 border border-slate-800 shadow-xl">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                <div>
+                  <div className="flex items-center gap-3 mb-2">
+                    <h1 className="text-2xl font-extrabold text-white tracking-tight">🚨 Emergency ZK-Pass (QR)</h1>
+                    <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/30">
+                      Paramedic Instant Scan
+                    </span>
+                  </div>
+                  <p className="text-sm text-slate-300 max-w-2xl leading-relaxed">
+                    Generate a compact, cryptographically signed QR pass for your phone lock screen. Paramedics instantly verify vital blood group and allergies without accessing psychiatric or surgery files.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setActiveTab('paramedic')}
+                  className="px-4 py-2.5 rounded-xl bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold shadow-lg cursor-pointer"
+                >
+                  🚑 Switch to EMT Scanner Mode
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+              <div className="lg:col-span-7 space-y-4">
+                <div className="glass-panel p-6 space-y-3">
+                  <h2 className="text-sm font-bold text-slate-100 mb-2">Selective Disclosure Configurator</h2>
+                  
+                  <div className="flex items-center justify-between p-3 rounded-xl bg-slate-900 border border-slate-800 text-xs">
+                    <div>
+                      <span className="font-bold text-slate-200 block">Emergency Blood Type</span>
+                      <span className="text-rose-400">{patientProfile.bloodGroup}</span>
+                    </div>
+                    <button onClick={() => togglePref('includeBloodGroup')} className={`px-3 py-1 rounded-lg text-xs font-semibold cursor-pointer ${emergencyPrefs.includeBloodGroup ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-500'}`}>
+                      {emergencyPrefs.includeBloodGroup ? 'Included ✓' : 'Hidden ✕'}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between p-3 rounded-xl bg-slate-900 border border-slate-800 text-xs">
+                    <div>
+                      <span className="font-bold text-slate-200 block">Severe Allergies</span>
+                      <span className="text-amber-300">{patientProfile.allergies.join(', ')}</span>
+                    </div>
+                    <button onClick={() => togglePref('includeAllergies')} className={`px-3 py-1 rounded-lg text-xs font-semibold cursor-pointer ${emergencyPrefs.includeAllergies ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-500'}`}>
+                      {emergencyPrefs.includeAllergies ? 'Included ✓' : 'Hidden ✕'}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between p-3 rounded-xl bg-slate-900 border border-slate-800 text-xs">
+                    <div>
+                      <span className="font-bold text-slate-200 block">Emergency Contact</span>
+                      <span className="text-blue-300">{patientProfile.emergencyContact}</span>
+                    </div>
+                    <button onClick={() => togglePref('includeEmergencyContact')} className={`px-3 py-1 rounded-lg text-xs font-semibold cursor-pointer ${emergencyPrefs.includeEmergencyContact ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-500'}`}>
+                      {emergencyPrefs.includeEmergencyContact ? 'Included ✓' : 'Hidden ✕'}
+                    </button>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-slate-950 border border-rose-500/20 text-[11px] text-slate-400">
+                    🔒 <strong>Zero-Knowledge Privacy Guard:</strong> Psychotherapy notes, clinical trial logs, and non-emergency records are mathematically excluded from the QR payload.
+                  </div>
+                </div>
+              </div>
+
+              <div className="lg:col-span-5 flex flex-col items-center">
+                <div className="w-full max-w-[300px] rounded-[32px] p-4 bg-slate-900 border-4 border-slate-700 shadow-2xl text-center space-y-3">
+                  <div className="text-[10px] font-mono text-slate-400">LOCK SCREEN EMERGENCY PASS</div>
+                  <div className="p-2 rounded-lg bg-rose-500 text-white font-bold text-xs">EMERGENCY MEDICAL PASS</div>
+                  <div className="p-2 bg-white rounded-xl inline-block">
+                    {qrDataUrl && <img src={qrDataUrl} alt="Emergency QR" className="w-44 h-44 mx-auto" />}
+                  </div>
+                  <div className="text-[10px] font-mono text-slate-400">
+                    <div>Blood: <span className="text-rose-400 font-bold">{patientProfile.bloodGroup}</span></div>
+                    <div className="text-emerald-400">Offline Sig: ✓ Valid</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // DOCTOR PORTAL VIEW
+      function DoctorPortalView() {
+        const { patientProfile, timedGrants, triggerBreakGlass, addNotification } = useVault();
+        const [selectedQuery, setSelectedQuery] = useState('VACCINE_STATUS');
+        const [isQuerying, setIsQuerying] = useState(false);
+        const [queryResult, setQueryResult] = useState(null);
+        const [showBreakGlassModal, setShowBreakGlassModal] = useState(false);
+        const [doctorName, setDoctorName] = useState('Dr. Marcus Thorne, MD');
+        const [hospitalDept, setHospitalDept] = useState('St. Jude Trauma ICU');
+        const [emergencyReason, setEmergencyReason] = useState('Unconscious polytrauma from accident. Urgent blood typing and allergy check needed.');
+
+        const handleSendZKQuery = async () => {
+          setIsQuerying(true);
+          let priv = selectedQuery === 'VACCINE_STATUS' ? { vaccineCode: 'VAX-COV-2024', doses: 3 } : { metricValue: 5.3 };
+          let pub = selectedQuery === 'VACCINE_STATUS' ? { requiredVaccineCode: 'VAX-COV-2024', minRequiredDoses: 2 } : { minThreshold: 4.0, maxThreshold: 5.7, metricName: 'HbA1c' };
+
+          const proof = await generateZKProof(selectedQuery, priv, pub);
+          const verif = await verifyZKProof(proof);
+          setQueryResult({ proof, verif });
+          setIsQuerying(false);
+          addNotification('ZK Verified', 'Doctor verified patient condition with zero data leakage.', 'success');
+        };
+
+        const handleBreakGlass = e => {
+          e.preventDefault();
+          triggerBreakGlass(doctorName, hospitalDept, emergencyReason);
+          setShowBreakGlassModal(false);
+        };
+
+        return (
+          <div className="space-y-8 animate-in fade-in duration-300">
+            <div className="p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900 to-blue-950/40 border border-slate-800 shadow-xl">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                <div>
+                  <h1 className="text-2xl font-extrabold text-white tracking-tight">🩺 Doctor & Hospital Verifier Portal</h1>
+                  <p className="text-sm text-slate-300 max-w-2xl mt-1">
+                    Verify patient health criteria via Zero-Knowledge proofs. In life-critical ICU situations, activate the Break-Glass emergency override.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowBreakGlassModal(true)}
+                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 text-white text-xs font-bold shadow-lg shadow-rose-600/30 cursor-pointer animate-pulse-subtle"
+                >
+                  🔥 Trigger Emergency Break-Glass (ICU)
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+              <div className="lg:col-span-7 space-y-4">
+                <div className="glass-panel p-6 space-y-4">
+                  <h2 className="text-sm font-bold text-white">Zero-Knowledge Query Console</h2>
+                  <select
+                    value={selectedQuery}
+                    onChange={e => setSelectedQuery(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-200 font-mono"
+                  >
+                    <option value="VACCINE_STATUS">Query: Is patient vaccinated with ≥ 2 doses of mRNA Booster? (VAX-COV-2024)</option>
+                    <option value="METRIC_RANGE_CHECK">Query: Is patient HbA1c in normal non-diabetic range (4.0% - 5.7%)?</option>
+                  </select>
+
+                  <button
+                    onClick={handleSendZKQuery}
+                    disabled={isQuerying}
+                    className="w-full py-3 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 text-white text-xs font-bold shadow-lg cursor-pointer disabled:opacity-50"
+                  >
+                    {isQuerying ? 'Verifying Groth16 Proof...' : '⚡ Submit ZK Verification Request'}
+                  </button>
+
+                  {queryResult && (
+                    <div className="p-4 rounded-xl bg-slate-950 border border-emerald-500/40 text-xs space-y-2 animate-in fade-in">
+                      <div className="p-3 rounded-lg bg-emerald-950/40 border border-emerald-500/30 text-emerald-200 font-bold">
+                        ✓ CONDITION MET: TRUE (Zero Data Leakage)
+                      </div>
+                      <div className="font-mono text-[10px] text-slate-400">
+                        Pairing Check: <span className="text-emerald-400">e(A,B) == e(α,β) • e(C,δ) [PASSED]</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="lg:col-span-5 space-y-4">
+                <div className="glass-panel p-6 space-y-3">
+                  <h2 className="text-sm font-bold text-white">Active Timed Access Grant</h2>
+                  <div className="p-3.5 rounded-xl bg-slate-950 text-xs space-y-2">
+                    <div className="flex justify-between"><span className="text-slate-400">Status:</span><span className="text-emerald-400 font-bold">ACTIVE (2-Hour Auto Lock)</span></div>
+                    <div className="flex justify-between"><span className="text-slate-400">Permitted:</span><span className="text-cyan-300">Immunization, Labs</span></div>
+                    <div className="flex justify-between text-rose-400 pt-1 border-t border-slate-800"><span>Excluded:</span><span>Psychiatric Notes, Surgery Files</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {showBreakGlassModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md">
+                <div className="w-full max-w-lg rounded-2xl bg-slate-900 border border-rose-500/50 p-6 shadow-2xl">
+                  <div className="flex justify-between pb-3 border-b border-slate-800 mb-4">
+                    <h3 className="text-base font-bold text-white">🚨 Emergency Break-Glass Override</h3>
+                    <button onClick={() => setShowBreakGlassModal(false)} className="text-slate-400 hover:text-white cursor-pointer">✕</button>
+                  </div>
+                  <form onSubmit={handleBreakGlass} className="space-y-4 text-xs">
+                    <p className="text-rose-300 text-[11px]">WARNING: This action is permanently anchored to the on-chain audit ledger.</p>
+                    <div>
+                      <label className="block text-slate-300 font-semibold mb-1">Attending Physician</label>
+                      <input type="text" value={doctorName} onChange={e => setDoctorName(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-200" />
+                    </div>
+                    <div>
+                      <label className="block text-slate-300 font-semibold mb-1">Hospital / ICU Unit</label>
+                      <input type="text" value={hospitalDept} onChange={e => setHospitalDept(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-200" />
+                    </div>
+                    <div>
+                      <label className="block text-slate-300 font-semibold mb-1">Emergency Justification</label>
+                      <textarea rows={3} value={emergencyReason} onChange={e => setEmergencyReason(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-200"></textarea>
+                    </div>
+                    <div className="flex justify-end gap-2 pt-2">
+                      <button type="button" onClick={() => setShowBreakGlassModal(false)} className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 cursor-pointer">Cancel</button>
+                      <button type="submit" className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold cursor-pointer">Confirm Break-Glass</button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      // PARAMEDIC SCANNER VIEW
+      function ParamedicScannerView() {
+        const { patientProfile, emergencyPrefs } = useVault();
+        const [isScanning, setIsScanning] = useState(false);
+        const [scannedData, setScannedData] = useState(null);
+
+        const handleScan = () => {
+          setIsScanning(true);
+          setTimeout(() => {
+            setIsScanning(false);
+            setScannedData({
+              scannedAt: new Date().toLocaleTimeString(),
+              bloodGroup: emergencyPrefs.includeBloodGroup ? patientProfile.bloodGroup : null,
+              allergies: emergencyPrefs.includeAllergies ? patientProfile.allergies : [],
+              emergencyContact: emergencyPrefs.includeEmergencyContact ? patientProfile.emergencyContact : null,
+              dnrStatus: emergencyPrefs.includeDNR ? patientProfile.dnrStatus : null
+            });
+          }, 850);
+        };
+
+        return (
+          <div className="space-y-8 animate-in fade-in duration-300">
+            <div className="p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900 to-rose-950/40 border border-slate-800 shadow-xl">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                <div>
+                  <h1 className="text-2xl font-extrabold text-white tracking-tight">🚑 Paramedic First-Responder Scanner</h1>
+                  <p className="text-sm text-slate-300 max-w-2xl mt-1">
+                    Scan patient lockscreen QR passes in the field without internet connectivity. Fast offline triage vitals verification.
+                  </p>
+                </div>
+                <button
+                  onClick={handleScan}
+                  disabled={isScanning}
+                  className="px-5 py-2.5 rounded-xl bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold shadow-lg cursor-pointer disabled:opacity-50"
+                >
+                  {isScanning ? 'Scanning...' : '📷 Scan Patient QR Pass'}
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+              <div className="lg:col-span-6 space-y-4">
+                <div className="glass-panel p-6 space-y-4">
+                  <h2 className="text-sm font-bold text-white">EMT Optical Scanner</h2>
+                  <div className="relative w-full h-72 rounded-2xl bg-slate-950 border-2 border-dashed border-slate-800 flex items-center justify-center overflow-hidden">
+                    {isScanning && <div className="scanner-beam"></div>}
+                    {isScanning ? (
+                      <p className="text-xs font-mono text-rose-400 font-bold">Decoding Cryptographic Matrix...</p>
+                    ) : scannedData ? (
+                      <div className="text-center p-4">
+                        <div className="text-emerald-400 font-bold text-sm mb-1">✓ QR DECODED & VERIFIED</div>
+                        <div className="text-[11px] text-slate-400">{scannedData.scannedAt}</div>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-500">Scanner Idle • Click "Scan Patient QR Pass"</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="lg:col-span-6">
+                {scannedData ? (
+                  <div className="glass-panel p-6 space-y-4 border-rose-500/30 animate-in fade-in">
+                    <div className="flex justify-between pb-2 border-b border-slate-800">
+                      <span className="text-xs font-bold text-white">Emergency Readout</span>
+                      <span className="text-emerald-400 font-mono text-[10px] font-bold">Offline Sig: Valid ✓</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="p-3.5 rounded-xl bg-slate-950 border border-rose-500/30">
+                        <span className="text-[11px] text-slate-400 block">Blood Group</span>
+                        <span className="text-xl font-bold text-rose-400 font-mono">{scannedData.bloodGroup}</span>
+                      </div>
+                      <div className="p-3.5 rounded-xl bg-slate-950 border border-amber-500/30">
+                        <span className="text-[11px] text-slate-400 block">Resuscitation</span>
+                        <span className="text-xs font-bold text-amber-300">{scannedData.dnrStatus}</span>
+                      </div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-amber-950/20 border border-amber-500/30 text-xs">
+                      <span className="font-bold text-amber-300 block mb-1">Severe Allergies:</span>
+                      <div className="flex flex-wrap gap-1">
+                        {scannedData.allergies.map((a, i) => (
+                          <span key={i} className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-200 border border-amber-500/40 text-xs font-bold">⚠ {a}</span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-slate-900 text-xs">
+                      <span className="text-slate-400 block text-[11px]">Emergency Contact:</span>
+                      <span className="text-slate-200 font-bold">{scannedData.emergencyContact}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="glass-panel p-8 text-center text-slate-500 text-xs flex items-center justify-center min-h-[280px]">
+                    Ready for Field Scan.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // RESEARCH MARKETPLACE VIEW
+      function ResearchMarketplaceView() {
+        const { currentRole, studies, claimResearchBounty, createStudy } = useVault();
+        const [claimingId, setClaimingId] = useState(null);
+        const [showModal, setShowModal] = useState(false);
+        const [title, setTitle] = useState('');
+        const [reward, setReward] = useState(120);
+
+        const handleClaim = async (study) => {
+          setClaimingId(study.id);
+          const proof = await generateZKProof('VACCINE_STATUS', { vaccineCode: 'VAX-COV-2024', doses: 3 }, { requiredVaccineCode: 'VAX-COV-2024', minRequiredDoses: 2 });
+          claimResearchBounty(study.id);
+          confetti({ particleCount: 80, spread: 70, origin: { y: 0.6 } });
+          setClaimingId(null);
+        };
+
+        const handleCreate = (e) => {
+          e.preventDefault();
+          createStudy({ title, rewardTokens: reward });
+          setShowModal(false);
+          setTitle('');
+        };
+
+        return (
+          <div className="space-y-8 animate-in fade-in duration-300">
+            <div className="p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900 to-amber-950/40 border border-slate-800 shadow-xl">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                <div>
+                  <h1 className="text-2xl font-extrabold text-white tracking-tight">🧪 Monetized Medical Research Marketplace</h1>
+                  <p className="text-sm text-slate-300 max-w-2xl mt-1">
+                    Prove trial eligibility via Zero-Knowledge proofs and claim instant crypto rewards ($MED tokens) directly to your wallet.
+                  </p>
+                </div>
+                {currentRole === 'pharma' && (
+                  <button onClick={() => setShowModal(true)} className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold shadow-lg cursor-pointer">
+                    + Post New Trial & Fund Escrow
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {studies.map(study => (
+                <div key={study.id} className="glass-panel p-5 flex flex-col justify-between">
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center">
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-amber-300 border border-amber-500/30">{study.category}</span>
+                      <span className="text-xs font-bold text-amber-400 font-mono">+{study.rewardTokens} $MED</span>
+                    </div>
+                    <h3 className="text-sm font-bold text-white">{study.title}</h3>
+                    <p className="text-xs text-slate-400">{study.criteriaDescription}</p>
+                  </div>
+
+                  <div className="pt-4 mt-4 border-t border-slate-800">
+                    {study.claimed ? (
+                      <div className="p-2.5 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-xs text-emerald-300 font-bold text-center">
+                        ✓ Reward Claimed (+{study.rewardTokens} $MED)
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => handleClaim(study)}
+                        disabled={claimingId === study.id}
+                        className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold shadow-lg cursor-pointer disabled:opacity-50"
+                      >
+                        {claimingId === study.id ? 'Generating ZK Proof...' : `✨ Prove & Claim +${study.rewardTokens} $MED`}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {showModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
+                <div className="w-full max-w-lg rounded-2xl bg-slate-900 border border-amber-500/40 p-6 shadow-2xl">
+                  <div className="flex justify-between pb-3 border-b border-slate-800 mb-4">
+                    <h3 className="text-base font-bold text-white">Post New Clinical Trial</h3>
+                    <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-white cursor-pointer">✕</button>
+                  </div>
+                  <form onSubmit={handleCreate} className="space-y-4 text-xs">
+                    <div>
+                      <label className="block text-slate-300 font-semibold mb-1">Study Title</label>
+                      <input type="text" required value={title} onChange={e => setTitle(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-200" />
+                    </div>
+                    <div>
+                      <label className="block text-slate-300 font-semibold mb-1">Reward per Patient ($MED)</label>
+                      <input type="number" value={reward} onChange={e => setReward(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-200" />
+                    </div>
+                    <div className="flex justify-end gap-2 pt-2">
+                      <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 cursor-pointer">Cancel</button>
+                      <button type="submit" className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold cursor-pointer">Deploy Trial</button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      // AUDIT LOGS VIEW
+      function AuditLogsView() {
+        const { auditLogs } = useVault();
+        return (
+          <div className="space-y-8 animate-in fade-in duration-300">
+            <div className="p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900 to-cyan-950/40 border border-slate-800 shadow-xl">
+              <h1 className="text-2xl font-extrabold text-white tracking-tight">📜 Immutable Blockchain Audit Ledger</h1>
+              <p className="text-sm text-slate-300 max-w-2xl mt-1">
+                Every zero-knowledge proof verification, time-locked access grant, and break-glass emergency override is permanently anchored on-chain.
+              </p>
+            </div>
+
+            <div className="glass-panel p-6 space-y-3">
+              <h2 className="text-sm font-bold text-white mb-3">On-Chain Event Stream ({auditLogs.length} Records)</h2>
+              {auditLogs.map(log => {
+                const isBreak = log.type === 'EMERGENCY_BREAK_GLASS';
+                return (
+                  <div key={log.id} className={`p-4 rounded-xl border ${isBreak ? 'bg-rose-950/40 border-rose-500/50' : 'bg-slate-900/80 border-slate-800'}`}>
+                    <div className="flex justify-between items-center mb-1">
+                      <h3 className={`text-sm font-bold ${isBreak ? 'text-rose-300' : 'text-white'}`}>{log.title}</h3>
+                      <span className="text-[10px] text-slate-400 font-mono">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                    </div>
+                    <p className="text-xs text-slate-300 mb-2">{log.detail}</p>
+                    <div className="flex justify-between text-[11px] font-mono text-slate-400 pt-2 border-t border-slate-800">
+                      <span>Actor: {log.actor}</span>
+                      <span className="text-cyan-400">Tx: {log.txHash}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      }
+
+      // ==========================================
+      // 5. MAIN APP SHELL
+      // ==========================================
+      function AppContent() {
+        const { currentRole, setCurrentRole, patientProfile, notifications } = useVault();
+        const [activeTab, setActiveTab] = useState('vault');
+        const [showNotifs, setShowNotifs] = useState(false);
+
+        const navTabs = [
+          { id: 'vault', label: 'Encrypted Vault', roleReq: 'patient' },
+          { id: 'ai-symptom', label: 'On-Device AI', roleReq: 'patient' },
+          { id: 'emergency-pass', label: 'Emergency ZK-Pass', roleReq: 'patient' },
+          { id: 'doctor', label: 'Doctor Verifier', roleReq: 'doctor' },
+          { id: 'paramedic', label: 'Paramedic Scanner', roleReq: 'paramedic' },
+          { id: 'research', label: 'Research Rewards', roleReq: 'pharma' },
+          { id: 'audit', label: 'Audit Ledger', roleReq: 'all' }
+        ];
+
+        return (
+          <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+            {/* Top Navbar */}
+            <header className="sticky top-0 z-50 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-xl">
+              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 text-white font-extrabold shadow-lg shadow-cyan-500/20">
+                    ZK
+                  </div>
+                  <div>
+                    <span className="font-bold text-lg text-white">ZK-MedVault</span>
+                    <span className="text-xs text-slate-400 block hidden sm:block">Zero-Knowledge Medical Protocol</span>
+                  </div>
+                </div>
+
+                {/* Role Switcher */}
+                <div className="flex items-center gap-1 p-1 bg-slate-900 rounded-xl border border-slate-800 text-xs">
+                  {['patient', 'doctor', 'paramedic', 'pharma'].map(r => (
+                    <button
+                      key={r}
+                      onClick={() => {
+                        setCurrentRole(r);
+                        if (r === 'patient') setActiveTab('vault');
+                        if (r === 'doctor') setActiveTab('doctor');
+                        if (r === 'paramedic') setActiveTab('paramedic');
+                        if (r === 'pharma') setActiveTab('research');
+                      }}
+                      className={`px-3 py-1.5 rounded-lg capitalize font-medium transition-all cursor-pointer ${
+                        currentRole === r ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-bold shadow' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {r}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Wallet & Alerts */}
+                <div className="flex items-center gap-3">
+                  <div className="px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono font-bold text-amber-300">
+                    {patientProfile.medTokens.toFixed(2)} $MED
+                  </div>
+                  <button
+                    onClick={() => setShowNotifs(!showNotifs)}
+                    className="relative p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-white cursor-pointer"
+                  >
+                    🔔
+                    {notifications.length > 0 && (
+                      <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-rose-500 text-[10px] font-bold text-white flex items-center justify-center">
+                        {notifications.length}
+                      </span>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </header>
+
+            {/* Feature Tabs */}
+            <div className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-md sticky top-16 z-40">
+              <div className="max-w-7xl mx-auto px-4 flex items-center gap-2 overflow-x-auto py-2.5">
+                {navTabs.map(tab => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
+                      activeTab === tab.id ? 'bg-slate-800 text-cyan-400 border border-cyan-500/40 shadow-sm' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Main View Container */}
+            <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+              {activeTab === 'vault' && <PatientVaultView />}
+              {activeTab === 'ai-symptom' && <AISymptomCheckerView />}
+              {activeTab === 'emergency-pass' && <EmergencyPassView setActiveTab={setActiveTab} />}
+              {activeTab === 'doctor' && <DoctorPortalView />}
+              {activeTab === 'paramedic' && <ParamedicScannerView />}
+              {activeTab === 'research' && <ResearchMarketplaceView />}
+              {activeTab === 'audit' && <AuditLogsView />}
+            </main>
+
+            <footer className="border-t border-slate-800/80 py-6 text-center text-xs text-slate-500">
+              ZK-MedVault Protocol • Zero-Knowledge Groth16 • AES-GCM-256 WebCrypto • On-Device AI
+            </footer>
+          </div>
+        );
+      }
+
+      function App() {
+        return (
+          <VaultProvider>
+            <AppContent />
+          </VaultProvider>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+  </body>
+</html>
